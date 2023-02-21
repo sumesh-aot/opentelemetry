@@ -1,0 +1,157 @@
+version: "3"
+
+networks:
+  observability:
+    driver: bridge
+
+volumes:
+  logs_data:
+
+services:
+  postgres:
+    image: postgres
+    environment:
+      - POSTGRES_DB=ff-service
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    ports:
+      - 5432:5432
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - observability
+
+  # loki:
+  #   image: grafana/loki:2.2.0
+  #   command: -config.file=/etc/loki/loki-local.yaml
+  #   ports:
+  #     - 3101:3100 # loki needs to be exposed so it receives logs
+  #   volumes:
+  #     - ./etc/loki-local.yaml:/etc/loki/loki-local.yaml
+  #   logging:
+  #     driver: "none"
+  #   networks:
+  #     - observability
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.27
+    ports:
+      - 14268:14268 # Jaeger Thrift HTTP
+      - 14250:14250 # Jaeger GRPC
+      - 16686:16686 # Jaeger UI
+      - 16687:16687 # Jaeger Admin UI
+    networks:
+      - observability
+
+  # promtail:
+  #   image: grafana/promtail:2.2.0
+  #   command: -config.file=/etc/promtail/promtail-local.yaml
+  #   volumes:
+  #     - ./etc/promtail-local.yaml:/etc/promtail/promtail-local.yaml
+  #     - logs_data:/app/logs
+  #   networks:
+  #     - observability
+  #   depends_on:
+  #     - loki
+
+  prometheus:
+    image: prom/prometheus:latest
+    entrypoint:
+      - /bin/prometheus
+      - --config.file=/etc/prometheus.yaml
+    ports:
+      - 9090:9090
+    volumes:
+      - ./etc/prometheus.yaml:/etc/prometheus.yaml
+    networks:
+      - observability
+
+  grafana:
+    image: grafana/grafana:8.2.1-ubuntu
+    ports:
+      - 3001:3000
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - ./etc/grafana-datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml
+      - ./etc/grafana-dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml
+      - ./etc/grafana-custom-dashboard.json:/var/lib/grafana/dashboards/grafana-custom-dashboard.json
+    networks:
+      - observability
+    depends_on:
+      - prometheus
+      - jaeger
+      - loki
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: "--config /etc/otel-config.yaml"
+    ports:
+      - 4317:4317 # OpenTelemetry GRPC
+      - 4318:4318 # OpenTelemetry HTTP
+      - 8889:8889 # Prometheus
+    volumes:
+      - ./etc/otel-config.yaml:/etc/otel-config.yaml
+    networks:
+      - observability
+    depends_on:
+      - jaeger
+
+  # chrome:
+  #   build:
+  #     context: ./selenium-tests
+  #     dockerfile: Dockerfile-standalone-chrome
+  #   shm_size: 256M
+  #   ports:
+  #     - 4444:4444
+  #   networks:
+  #     - observability
+
+  python-api:
+    build:
+      context: ./ff-python-api
+      dockerfile: Dockerfile
+    ports:
+      - 5000:5000
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/ff-service
+      DB_USER: postgres
+      DB_PASS: postgres
+    volumes:
+      - logs_data:/app/logs
+    networks:
+      - observability
+    depends_on:
+      - postgres
+
+  # java-api:
+  #   build:
+  #     context: ./ff-java-api
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - 8090:8090
+  #   environment:
+  #     DB_URL: jdbc:postgresql://postgres:5432/person-service
+  #     DB_USER: postgres
+  #     DB_PASS: postgrespassword
+  #   volumes:
+  #     - logs_data:/app/logs
+  #   networks:
+  #     - observability
+  #   depends_on:
+  #     - postgres
+
+  ff-web:
+    build:
+      context: ./ff-web
+      dockerfile: Dockerfile
+    ports:
+      - 3005:3005
+    networks:
+      - observability
+    depends_on:
+      - otel-collector
+      - backend
