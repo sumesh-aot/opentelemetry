@@ -1,2 +1,5 @@
 
+ff-python-api/__pycache__/app.cpython-310.pyc
 *.pyc
+ff-web/node_modules/*
+.DS_Store
